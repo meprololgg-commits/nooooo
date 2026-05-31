@@ -40,9 +40,6 @@ local blockButton   = LocalPlayer.PlayerGui:WaitForChild("MobileHandler").Block
 local finishButton  = LocalPlayer.PlayerGui:WaitForChild("MobileHandler").Finish
 local sprintButton  = LocalPlayer.PlayerGui.MobileHandler.Sprint
 
-local sendInputEvent    = inputEvents:WaitForChild("SendInput")   
-local sendInputEvent2   = inputEvents:WaitForChild("SendInput2")  
-local releaseInputEvent = inputEvents:WaitForChild("ReleaseInput")
 
 local isAttackReady = true
 local isSprinting   = false
