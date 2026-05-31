@@ -1,0 +1,360 @@
+local function WaitForChildInDescendants(parent, name, timeout)
+	local start = os.clock()
+	while os.clock() - start < (timeout or 5) do
+		local found = parent:FindFirstChild(name, true)
+		if found then return found end
+		task.wait()
+	end
+	return nil
+end
+
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer       = game:GetService("Players").LocalPlayer
+
+local CooldownUI  = ReplicatedStorage.Remotes.CooldownUI
+local SetCooldown = ReplicatedStorage.Remotes.SetCooldown
+local CreateSound = ReplicatedStorage.Remotes:WaitForChild("CreateSound")
+local ChangeValue = ReplicatedStorage.Remotes.ChangeValue
+local DodgeButton = LocalPlayer.PlayerGui.MobileHandler.Dodge
+
+local isDodging = false
+local isHolding = false
+
+local isBackFlipping = false
+local onCooldown     = false
+
+local Character, Humanoid
+local Ragdolled, IsDowned, IsFinishing
+
+local DodgeCooldown, DodgeTime, DodgeFatigue, CanDodge
+
+local BackFlipCooldown, IsBackFlipping, CanBackFlip, RagdollImmunity, IsReviving
+local BackFlipAnim, BackFlipSound
+
+local inputEvents = ReplicatedStorage:WaitForChild("Remotes")
+
+local attackButton  = LocalPlayer.PlayerGui:WaitForChild("MobileHandler").Attack
+local blockButton   = LocalPlayer.PlayerGui:WaitForChild("MobileHandler").Block
+local finishButton  = LocalPlayer.PlayerGui:WaitForChild("MobileHandler").Finish
+local sprintButton  = LocalPlayer.PlayerGui.MobileHandler.Sprint
+
+local sendInputEvent    = inputEvents:WaitForChild("SendInput")   
+local sendInputEvent2   = inputEvents:WaitForChild("SendInput2")  
+local releaseInputEvent = inputEvents:WaitForChild("ReleaseInput")
+
+local isAttackReady = true
+local isSprinting   = false
+local activeSprintTween = nil
+local mouse = LocalPlayer:GetMouse()
+
+local CanSprint, IsSprintingValue, SprintMultiplier, DefaultWalkSpeed
+
+local function CreateSpeedTween(targetSpeed, duration)
+	if not Humanoid then return end
+	return TweenService:Create(Humanoid, TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out), {
+		["WalkSpeed"] = targetSpeed
+	})
+end
+
+local function UpdateSpeed()
+	if not Character or not Humanoid or not Character:FindFirstChildOfClass("Tool") then return end
+	if not (IsDowned.Value or (Ragdolled.Value or IsFinishing.Value)) then
+		if isSprinting then
+			if activeSprintTween then
+				activeSprintTween:Cancel()
+			end
+			activeSprintTween = CreateSpeedTween((DefaultWalkSpeed.Value or 11) * (SprintMultiplier.Value or 1.8), 0.3)
+		else
+			if activeSprintTween then
+				activeSprintTween:Cancel()
+			end
+			activeSprintTween = CreateSpeedTween(DefaultWalkSpeed.Value or 11, 0.5)
+		end
+		activeSprintTween:Play()
+	end
+end
+
+local function ForceSprintStart()
+	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
+	if not (IsDowned.Value or IsFinishing.Value) then
+		if CanSprint.Value then
+			if isSprinting then
+				return
+			end
+			isSprinting = true
+			IsSprintingValue.Value = isSprinting
+			UpdateSpeed()
+		end
+	end
+end
+
+local function ForceSprintStop()
+	if isSprinting then
+		isSprinting = false
+		IsSprintingValue.Value = isSprinting
+		UpdateSpeed()
+	end
+end
+
+local function ApplyDodgeEffect(duration)
+	if not Character then return end
+	local existing = Character:FindFirstChild("DodgeHighlight")
+	if existing then existing:Destroy() end
+
+	local Highlight = Instance.new("Highlight")
+	Highlight.Name                = "DodgeHighlight"
+	Highlight.Parent              = Character
+	Highlight.FillTransparency    = 1
+	Highlight.OutlineTransparency = 0
+	Highlight.OutlineColor        = Color3.new(1, 1, 1)
+
+	local tween = TweenService:Create(
+		Highlight,
+		TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ OutlineTransparency = 1 }
+	)
+	tween:Play()
+	tween.Completed:Wait()
+	Highlight:Destroy()
+end
+
+local function DodgeLoop()
+	while isHolding do
+		if not Character or not Character:FindFirstChildOfClass("Tool") then break end
+		if Character and Humanoid
+			and not Ragdolled.Value and not IsDowned.Value and not IsFinishing.Value
+			and DodgeTime.Value == 0 and DodgeCooldown.Value == 0
+			and CanDodge.Value and not isDodging
+			and not Humanoid.Jump
+		then
+			isDodging = true
+			SetCooldown:FireServer(0.5, "Set", DodgeTime)
+			ApplyDodgeEffect(0.5)
+			task.wait(0.5)
+			isDodging = false
+			SetCooldown:FireServer(1.5 + DodgeFatigue.Value, "Set", DodgeCooldown)
+			SetCooldown:FireServer(1, "Add", DodgeFatigue)
+			CooldownUI:Fire("Dodge", DodgeCooldown, 88193227359336, "Ability")
+		end
+		task.wait(0.05)
+	end
+end
+
+local function CanPerformBackFlip()
+	if not Character or not Character:FindFirstChildOfClass("Tool") then return false end
+	if not Character or not Humanoid then return false end
+	if Ragdolled.Value then return false end
+	if IsDowned.Value then return false end
+	if IsFinishing.Value then return false end
+	if onCooldown then return false end
+	if isBackFlipping then return false end
+	if IsBackFlipping.Value then return false end
+	if not CanBackFlip.Value then return false end
+	if Character.HumanoidRootPart:FindFirstChild("BFVelocity") then return false end
+	if not Humanoid.Jump then return false end
+	if Character.HumanoidRootPart.Velocity.Magnitude > 50 then return false end
+	return true
+end
+
+local function PlayBackFlip()
+	isBackFlipping = true
+
+	ChangeValue:FireServer(IsBackFlipping, true)
+	SetCooldown:FireServer(1, "Add", RagdollImmunity)
+
+	if BackFlipSound then
+		CreateSound:FireServer({
+			Name               = BackFlipSound.Name,
+			Parent             = Character:FindFirstChild("HumanoidRootPart"),
+			SoundId            = BackFlipSound.SoundId,
+			Volume             = BackFlipSound.Volume,
+			PlaybackSpeed      = BackFlipSound.PlaybackSpeed,
+			Looped             = BackFlipSound.Looped,
+			RollOffMaxDistance = BackFlipSound.RollOffMaxDistance,
+			RollOffMinDistance = BackFlipSound.RollOffMinDistance,
+			RollOffMode        = BackFlipSound.RollOffMode,
+		})
+	end
+
+	local BFVelocity = Instance.new("BodyVelocity")
+	BFVelocity.MaxForce = Vector3.new(30000, 30000, 30000)
+	BFVelocity.Name     = "BFVelocity"
+	BFVelocity.Velocity = -Character.HumanoidRootPart.CFrame.LookVector * 50 + Vector3.new(0, 25, 0)
+	BFVelocity.Parent   = Character.HumanoidRootPart
+
+	BackFlipAnim:Play()
+	game.Debris:AddItem(BFVelocity,0.25)
+	task.wait(0.25)
+	isBackFlipping = false
+	ChangeValue:FireServer(IsBackFlipping, false)
+
+	SetCooldown:FireServer(2.5, "Set", BackFlipCooldown)
+	CooldownUI:Fire("Backflip", BackFlipCooldown, 129388845192800, "Ability")
+end
+
+local touchConnection, reviveConnection
+local downedConn, canSprintConn, baseSpeedConn, multSpeedConn, toolDescendantConn
+
+local function OnCharacterAdded(newCharacter)
+	isDodging      = false
+	isBackFlipping = false
+	onCooldown     = false
+	isSprinting    = false
+	Character      = newCharacter
+	Humanoid       = Character:WaitForChild("Humanoid")
+
+	Ragdolled   = WaitForChildInDescendants(Character, "Ragdolled",   5)
+	IsDowned    = WaitForChildInDescendants(Character, "IsDowned",    5)
+	IsFinishing = WaitForChildInDescendants(Character, "IsFinishing", 5)
+
+	CanSprint        = WaitForChildInDescendants(Character, "CanSprint", 5)
+	IsSprintingValue = WaitForChildInDescendants(Character, "IsSprinting", 5)
+	SprintMultiplier = WaitForChildInDescendants(Character, "SprintMultiplier", 5)
+	DefaultWalkSpeed = WaitForChildInDescendants(Character, "DefaultWalkSpeed", 5)
+
+	DodgeCooldown = WaitForChildInDescendants(Character, "DodgeCooldown", 5)
+	DodgeTime     = WaitForChildInDescendants(Character, "DodgeTime",     5)
+	DodgeFatigue  = WaitForChildInDescendants(Character, "DodgeFatigue",  5)
+	CanDodge      = WaitForChildInDescendants(Character, "CanDodge",      5)
+
+	BackFlipCooldown = WaitForChildInDescendants(Character, "BackFlipCooldown", 5)
+	IsBackFlipping   = WaitForChildInDescendants(Character, "IsBackFlipping",   5)
+	CanBackFlip      = WaitForChildInDescendants(Character, "CanBackFlip",      5)
+	RagdollImmunity  = WaitForChildInDescendants(Character, "RagdollImmunity",  5)
+	IsReviving       = WaitForChildInDescendants(Character, "IsReviving",       5)
+
+	local PlayerScripts=Character:WaitForChild("PlayerScripts")
+	local Client         = PlayerScripts:WaitForChild("Client")
+	local BackFlipAbility = Client:WaitForChild("BackFlipAbility")
+	BackFlipAnim  = Humanoid:LoadAnimation(BackFlipAbility:WaitForChild("BackFlipAnim"))
+	BackFlipSound = BackFlipAbility:FindFirstChild("BackFlipSound")
+
+	if touchConnection then touchConnection:Disconnect() end
+	if reviveConnection then reviveConnection:Disconnect() end
+	if downedConn then downedConn:Disconnect() end
+	if canSprintConn then canSprintConn:Disconnect() end
+	if baseSpeedConn then baseSpeedConn:Disconnect() end
+	if multSpeedConn then multSpeedConn:Disconnect() end
+	if toolDescendantConn then toolDescendantConn:Disconnect() end
+
+	touchConnection = Character.HumanoidRootPart.Touched:Connect(function(hit)
+		if hit:IsDescendantOf(Character) then return end
+		local BFVelocity = Character.HumanoidRootPart:FindFirstChild("BFVelocity")
+		if BFVelocity then BFVelocity:Destroy() end
+	end)
+
+	reviveConnection = IsReviving.Changed:Connect(function()
+		if IsReviving.Value then
+			local BFVelocity = Character.HumanoidRootPart:FindFirstChild("BFVelocity")
+			if BFVelocity then BFVelocity:Destroy() end
+		end
+	end)
+
+	downedConn = IsDowned.Changed:Connect(function()
+		if IsDowned.Value then
+			if activeSprintTween then activeSprintTween:Cancel() end
+			Humanoid.WalkSpeed = 0
+		end
+	end)
+
+	canSprintConn = CanSprint.Changed:Connect(function(p29)
+		if p29 or (IsDowned.Value or IsFinishing.Value) then
+			if p29 then
+				disable = false
+			end
+			return
+		elseif Humanoid.WalkSpeed == 0 then
+			return
+		elseif isSprinting then
+			ForceSprintStop()
+		end
+	end)
+
+	baseSpeedConn = DefaultWalkSpeed.Changed:Connect(UpdateSpeed)
+	multSpeedConn = SprintMultiplier.Changed:Connect(UpdateSpeed)
+
+	toolDescendantConn = Character.ChildRemoved:Connect(function(child)
+		if child:IsA("Tool") then
+			ForceSprintStop()
+		end
+	end)
+end
+
+LocalPlayer.CharacterAdded:Connect(OnCharacterAdded)
+if LocalPlayer.Character then
+	OnCharacterAdded(LocalPlayer.Character)
+end
+
+blockButton.InputBegan:Connect(function()
+	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
+	if isAttackReady then
+		sendInputEvent2:FireServer(Enum.KeyCode.ButtonB, 1)
+	end
+end)
+
+blockButton.InputEnded:Connect(function()
+	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
+	if isAttackReady then
+		sendInputEvent:FireServer(Enum.KeyCode.ButtonB, mouse.Hit)
+	end
+	sendInputEvent2:FireServer(Enum.KeyCode.ButtonB, 2)
+
+	ForceSprintStart()
+end)
+
+UserInputService.InputBegan:Connect(function(p27, p28)
+	if p28 then return end
+	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
+	if not (IsDowned.Value or IsFinishing.Value) then
+		if p27.KeyCode == Enum.KeyCode.LeftShift or p27.KeyCode == Enum.KeyCode.ButtonL3 then
+			if isSprinting then
+				ForceSprintStop()
+			end
+			if CanSprint.Value then
+				if isSprinting then
+					return
+				end
+				isSprinting = true
+				IsSprintingValue.Value = isSprinting
+				UpdateSpeed()
+			end
+		end
+	end
+end)
+
+sprintButton.Activated:Connect(function()
+	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
+	if IsDowned.Value or IsFinishing.Value then
+		return
+	elseif isSprinting then
+		ForceSprintStop()
+	else
+		if CanSprint.Value then
+			if isSprinting then
+				return
+			end
+			isSprinting = true
+			IsSprintingValue.Value = isSprinting
+			UpdateSpeed()
+		end
+		return
+	end
+end)
+
+DodgeButton.InputBegan:Connect(function()
+	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
+	if isHolding then return end
+	isHolding = true
+	task.spawn(DodgeLoop)
+end)
+
+DodgeButton.InputEnded:Connect(function()
+	isHolding = false
+end)
+
+DodgeButton.Activated:Connect(function()
+	if not CanPerformBackFlip() then return end
+	PlayBackFlip()
+end)
