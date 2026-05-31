@@ -259,7 +259,7 @@ local function OnCharacterAdded(newCharacter)
 	canSprintConn = CanSprint.Changed:Connect(function(p29)
 		if p29 or (IsDowned.Value or IsFinishing.Value) then
 			if p29 then
-				disable = false
+				ForceSprintStop()
 			end
 			return
 		elseif Humanoid.WalkSpeed == 0 then
@@ -286,17 +286,10 @@ end
 
 blockButton.InputBegan:Connect(function()
 	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
-	if isAttackReady then
-		sendInputEvent2:FireServer(Enum.KeyCode.ButtonB, 1)
-	end
 end)
 
 blockButton.InputEnded:Connect(function()
 	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
-	if isAttackReady then
-		sendInputEvent:FireServer(Enum.KeyCode.ButtonB, mouse.Hit)
-	end
-	sendInputEvent2:FireServer(Enum.KeyCode.ButtonB, 2)
 
 	ForceSprintStart()
 end)
