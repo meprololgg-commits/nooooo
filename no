@@ -8,7 +8,6 @@ local function WaitForChildInDescendants(parent, name, timeout)
 	return nil
 end
 
-Print("GO")
 local UserInputService  = game:GetService("UserInputService")
 local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -22,31 +21,25 @@ local DodgeButton = LocalPlayer.PlayerGui.MobileHandler.Dodge
 
 local isDodging = false
 local isHolding = false
-
 local isBackFlipping = false
 local onCooldown     = false
 
-local Character, Humanoid
+local Character, Humanoid, Animator
 local Ragdolled, IsDowned, IsFinishing
 
 local DodgeCooldown, DodgeTime, DodgeFatigue, CanDodge
-
 local BackFlipCooldown, IsBackFlipping, CanBackFlip, RagdollImmunity, IsReviving
 local BackFlipAnim, BackFlipSound
-
-local inputEvents = ReplicatedStorage:WaitForChild("Remotes")
 
 local attackButton  = LocalPlayer.PlayerGui:WaitForChild("MobileHandler").Attack
 local blockButton   = LocalPlayer.PlayerGui:WaitForChild("MobileHandler").Block
 local finishButton  = LocalPlayer.PlayerGui:WaitForChild("MobileHandler").Finish
 local sprintButton  = LocalPlayer.PlayerGui.MobileHandler.Sprint
 
-
-local isAttackReady = true
 local isSprinting   = false
 local activeSprintTween = nil
-local mouse = LocalPlayer:GetMouse()
 
+local mouse = LocalPlayer:GetMouse()
 local CanSprint, IsSprintingValue, SprintMultiplier, DefaultWalkSpeed
 
 local function CreateSpeedTween(targetSpeed, duration)
@@ -60,14 +53,10 @@ local function UpdateSpeed()
 	if not Character or not Humanoid or not Character:FindFirstChildOfClass("Tool") then return end
 	if not (IsDowned.Value or (Ragdolled.Value or IsFinishing.Value)) then
 		if isSprinting then
-			if activeSprintTween then
-				activeSprintTween:Cancel()
-			end
+			if activeSprintTween then activeSprintTween:Cancel() end
 			activeSprintTween = CreateSpeedTween((DefaultWalkSpeed.Value or 11) * (SprintMultiplier.Value or 1.8), 0.3)
 		else
-			if activeSprintTween then
-				activeSprintTween:Cancel()
-			end
+			if activeSprintTween then activeSprintTween:Cancel() end
 			activeSprintTween = CreateSpeedTween(DefaultWalkSpeed.Value or 11, 0.5)
 		end
 		activeSprintTween:Play()
@@ -77,10 +66,7 @@ end
 local function ForceSprintStart()
 	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
 	if not (IsDowned.Value or IsFinishing.Value) then
-		if CanSprint.Value then
-			if isSprinting then
-				return
-			end
+		if CanSprint.Value and not isSprinting then
 			isSprinting = true
 			IsSprintingValue.Value = isSprinting
 			UpdateSpeed()
@@ -114,17 +100,21 @@ local function ApplyDodgeEffect(duration)
 		{ OutlineTransparency = 1 }
 	)
 	tween:Play()
-	tween.Completed:Wait()
-	Highlight:Destroy()
+	task.spawn(function()
+		tween.Completed:Wait()
+		if Highlight then Highlight:Destroy() end
+	end)
 end
 
 local function DodgeLoop()
 	while isHolding do
 		if not Character or not Character:FindFirstChildOfClass("Tool") then break end
-		if Character and Humanoid
+		
+		-- Only dodge if the humanoid is NOT jumping
+		if Character and Humanoid and Animator
 			and not Ragdolled.Value and not IsDowned.Value and not IsFinishing.Value
 			and DodgeTime.Value == 0 and DodgeCooldown.Value == 0
-			and CanDodge.Value and not isDodging
+			and CanDodge.Value and not isDodging and not isBackFlipping
 			and not Humanoid.Jump
 		then
 			isDodging = true
@@ -143,15 +133,11 @@ end
 local function CanPerformBackFlip()
 	if not Character or not Character:FindFirstChildOfClass("Tool") then return false end
 	if not Character or not Humanoid then return false end
-	if Ragdolled.Value then return false end
-	if IsDowned.Value then return false end
-	if IsFinishing.Value then return false end
-	if onCooldown then return false end
-	if isBackFlipping then return false end
-	if IsBackFlipping.Value then return false end
+	if Ragdolled.Value or IsDowned.Value or IsFinishing.Value then return false end
+	if onCooldown or isBackFlipping or isDodging or IsBackFlipping.Value then return false end
 	if not CanBackFlip.Value then return false end
 	if Character.HumanoidRootPart:FindFirstChild("BFVelocity") then return false end
-	if not Humanoid.Jump then return false end
+	if not Humanoid.Jump then return false end -- Must be jumping
 	if Character.HumanoidRootPart.Velocity.Magnitude > 50 then return false end
 	return true
 end
@@ -182,8 +168,8 @@ local function PlayBackFlip()
 	BFVelocity.Velocity = -Character.HumanoidRootPart.CFrame.LookVector * 50 + Vector3.new(0, 25, 0)
 	BFVelocity.Parent   = Character.HumanoidRootPart
 
-	BackFlipAnim:Play()
-	game.Debris:AddItem(BFVelocity,0.25)
+	if BackFlipAnim then BackFlipAnim:Play() end
+	game.Debris:AddItem(BFVelocity, 0.25)
 	task.wait(0.25)
 	isBackFlipping = false
 	ChangeValue:FireServer(IsBackFlipping, false)
@@ -202,6 +188,7 @@ local function OnCharacterAdded(newCharacter)
 	isSprinting    = false
 	Character      = newCharacter
 	Humanoid       = Character:WaitForChild("Humanoid")
+	Animator       = Humanoid:WaitForChild("Animator") -- Use Animator for loading animations
 
 	Ragdolled   = WaitForChildInDescendants(Character, "Ragdolled",   5)
 	IsDowned    = WaitForChildInDescendants(Character, "IsDowned",    5)
@@ -223,12 +210,16 @@ local function OnCharacterAdded(newCharacter)
 	RagdollImmunity  = WaitForChildInDescendants(Character, "RagdollImmunity",  5)
 	IsReviving       = WaitForChildInDescendants(Character, "IsReviving",       5)
 
-	local PlayerScripts=Character:WaitForChild("PlayerScripts")
+	-- FIX: PlayerScripts is located under LocalPlayer, NOT the Character model
+	local PlayerScripts  = LocalPlayer:WaitForChild("PlayerScripts")
 	local Client         = PlayerScripts:WaitForChild("Client")
 	local BackFlipAbility = Client:WaitForChild("BackFlipAbility")
-	BackFlipAnim  = Humanoid:LoadAnimation(BackFlipAbility:WaitForChild("BackFlipAnim"))
+	
+	local animInstance = BackFlipAbility:WaitForChild("BackFlipAnim")
+	BackFlipAnim  = Animator:LoadAnimation(animInstance)
 	BackFlipSound = BackFlipAbility:FindFirstChild("BackFlipSound")
 
+	-- Disconnect old connections safely
 	if touchConnection then touchConnection:Disconnect() end
 	if reviveConnection then reviveConnection:Disconnect() end
 	if downedConn then downedConn:Disconnect() end
@@ -259,9 +250,7 @@ local function OnCharacterAdded(newCharacter)
 
 	canSprintConn = CanSprint.Changed:Connect(function(p29)
 		if p29 or (IsDowned.Value or IsFinishing.Value) then
-			if p29 then
-				ForceSprintStop()
-			end
+			if p29 then ForceSprintStop() end
 			return
 		elseif Humanoid.WalkSpeed == 0 then
 			return
@@ -285,13 +274,8 @@ if LocalPlayer.Character then
 	OnCharacterAdded(LocalPlayer.Character)
 end
 
-blockButton.InputBegan:Connect(function()
-	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
-end)
-
 blockButton.InputEnded:Connect(function()
 	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
-
 	ForceSprintStart()
 end)
 
@@ -302,11 +286,7 @@ UserInputService.InputBegan:Connect(function(p27, p28)
 		if p27.KeyCode == Enum.KeyCode.LeftShift or p27.KeyCode == Enum.KeyCode.ButtonL3 then
 			if isSprinting then
 				ForceSprintStop()
-			end
-			if CanSprint.Value then
-				if isSprinting then
-					return
-				end
+			elseif CanSprint.Value then
 				isSprinting = true
 				IsSprintingValue.Value = isSprinting
 				UpdateSpeed()
@@ -317,35 +297,36 @@ end)
 
 sprintButton.Activated:Connect(function()
 	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
-	if IsDowned.Value or IsFinishing.Value then
-		return
-	elseif isSprinting then
+	if IsDowned.Value or IsFinishing.Value then return end
+	
+	if isSprinting then
 		ForceSprintStop()
-	else
-		if CanSprint.Value then
-			if isSprinting then
-				return
-			end
-			isSprinting = true
-			IsSprintingValue.Value = isSprinting
-			UpdateSpeed()
-		end
-		return
+	elseif CanSprint.Value then
+		isSprinting = true
+		IsSprintingValue.Value = isSprinting
+		UpdateSpeed()
 	end
 end)
 
+-- Unified Dodge / Backflip Input Controller
 DodgeButton.InputBegan:Connect(function()
 	if not Character or not Character:FindFirstChildOfClass("Tool") then return end
 	if isHolding then return end
 	isHolding = true
+	
+	-- Context Action Check: If jumping, do a backflip immediately and cancel the hold loop
+	if Humanoid and Humanoid.Jump then
+		isHolding = false
+		if CanPerformBackFlip() then
+			PlayBackFlip()
+		end
+		return
+	end
+	
+	-- Otherwise, engage the normal dodging loop
 	task.spawn(DodgeLoop)
 end)
 
 DodgeButton.InputEnded:Connect(function()
 	isHolding = false
-end)
-
-DodgeButton.Activated:Connect(function()
-	if not CanPerformBackFlip() then return end
-	PlayBackFlip()
 end)
