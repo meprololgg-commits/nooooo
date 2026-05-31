@@ -8,6 +8,7 @@ local function WaitForChildInDescendants(parent, name, timeout)
 	return nil
 end
 
+Print("GO")
 local UserInputService  = game:GetService("UserInputService")
 local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
